@@ -22,6 +22,8 @@ trait HPMEControllerBundle extends Bundle{
   // DMA Ctrl Signals
   val dmaReq = Decoupled(UInt(DMA_REQ_WIDTH.W))
   val dmaComplete = Input(Bool())
+  val encReq = Decoupled(UInt(ENC_REQ_WIDTH.W))
+  val encComplete = Input(Bool())
 }
 
 /*
@@ -38,16 +40,27 @@ trait HPMEContrllerModule extends HasRegMap{
   val io: HPMEControllerBundle
   implicit val p: Parameters
   def params: HPMEControllerParams
-  val dmaReqReg = RegInit(0.U(DMA_REQ_WIDTH.W))
+  // MMIOs
+  val dmaReqReg = RegInit(0.U(DMA_REQ_WIDTH.W)) // (62,61): 0 data, 1 key, 2 MAC (60,50): transfer words,
+                                                // (49,2): base addr, (1,0): 2 write 1 read
   val dmaCompleteReg = RegInit(false.B)
+  val encReqReg = RegInit(0.U(ENC_REQ_WIDTH.W)) // 1: enable 0: unable
+  val encCompleteReg = RegInit(false.B)
 
   io.dmaReq.valid := (dmaReqReg =/= 0.U)
   io.dmaReq.bits := dmaReqReg
   dmaCompleteReg := (io.dmaComplete) && (dmaReqReg =/= 0.U)
+
+  io.encReq.valid := (encReqReg =/= 0.U)
+  io.encReq.bits := encReqReg
+  encCompleteReg := (io.encComplete) && (encReqReg =/= 0.U)
+
   printf("[HPME Log] dmaReqReg = %x, dmaCompleteReg = %d\n", dmaReqReg, dmaCompleteReg)
   regmap(
     0x00 -> Seq(RegField.w(DMA_REQ_WIDTH, dmaReqReg)), // when written a number, valid will be set
-    0x08 -> Seq(RegField.r(1, dmaCompleteReg))
+    0x08 -> Seq(RegField.r(1, dmaCompleteReg)),
+    0x10 -> Seq(RegField.w(ENC_REQ_WIDTH, encReqReg)),
+    0x18 -> Seq(RegField.r(1, encCompleteReg)),
   )
 }
 

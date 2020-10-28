@@ -61,7 +61,7 @@ class DMAReader(implicit p:Parameters) extends LazyModule{
     /*
      * Respond to read requests and send read memory requests
      */
-    io.req.ready := (state === s_read)
+    io.req.ready := (state === s_init)
     bytesLeft := MuxCase(bytesLeft, Seq(
       ((state === s_init) -> io.req.bits.bytesSize),
       (edge.done(mem.a) -> (bytesLeft - blockBytes.U))))
@@ -127,7 +127,7 @@ class DMAWriter(implicit p:Parameters) extends LazyModule{
       ((state === s_init) -> io.req.bits.address),
       (edge.done(mem.a) -> (address + blockBytes.U))))
 
-    mem.d.ready := true.B
+    mem.d.ready := state === s_resp
     mem.a.valid := (state === s_write) && (io.data.valid)
     mem.a.bits := edge.Put(
       fromSource = 0.U,

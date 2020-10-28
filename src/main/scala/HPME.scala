@@ -20,6 +20,7 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
   val controller = LazyModule(new HPMEController(c))
   val dmaReader = LazyModule(new DMAReader)
   val dmaWriter = LazyModule(new DMAWriter)
+  val aesgcm = LazyModule(new Aesgcm)
 
   val hpmeNode = TLIdentityNode()
   hpmeNode := TLWidthWidget(8) := dmaReader.node // bus with 8-bytes width
@@ -35,8 +36,13 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
      */
     val bufferSize = BUFFER_SIZE // buffer is 512 * 64bit
     val bufferSizeBits = log2Ceil(bufferSize)
-    val initSeq = for(i <- 1 until (bufferSize + 1)) yield i.U(BUFFER_WIDTH.W)
-    val regBuffer = RegInit(VecInit(initSeq))
+    val initSeq = for(i <- 1 until (bufferSize + 1)) yield 0.U(BUFFER_WIDTH.W)
+
+    val readBuffer = RegInit(VecInit(initSeq))
+    val writeBuffer = RegInit(VecInit(initSeq))
+    val keyBuffer = Reg(Vec(2, UInt(DMA_DATA_WIDTH.W)))
+    val macBuffer = Reg(Vec(2, UInt(DMA_DATA_WIDTH.W)))
+
     val idxR = RegInit(0.U(bufferSizeBits.W))
     val idxW = RegInit(0.U(bufferSizeBits.W))
 
@@ -45,7 +51,8 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
      */
     dmaReqType := controller.module.io.dmaReq.bits(1,0)
     val dmaReqAddress = Cat(0.U(16), controller.module.io.dmaReq.bits(49,2))
-    val dmaReqBytesSize = controller.module.io.dmaReq.bits(62, 50)
+    val dmaReqBytesSize = controller.module.io.dmaReq.bits(60, 50) << 2
+    val dmaReqDataType = controller.module.io.dmaReq.bits(62, 61)
     val dmaReqValid = controller.module.io.dmaReq.valid
 
     /*
@@ -65,9 +72,21 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
 
     dmaReader.module.io.data.ready := false.B
     when(ren && dmaReader.module.io.data.valid){ // valid will be high for one cycle when data comes
-      regBuffer(idxR) := dmaReader.module.io.data.bits
+      switch(dmaReqDataType){
+        is(DMA_REQ_DATA_TYPE_DATA){
+          readBuffer(idxR) := dmaReader.module.io.data.bits
+          idxR := Mux(idxR === (bufferSize-1).U, 0.U, idxR + 1.U)
+        }
+        is(DMA_REQ_DATA_TYPE_KEY){
+          keyBuffer(idxR) := dmaReader.module.io.data.bits
+          idxR := Mux(idxR === 1.U, 0.U, 1.U)
+        }
+        is(DMA_REQ_DATA_TYPE_MAC){
+          macBuffer(idxR) := dmaReader.module.io.data.bits
+          idxR := Mux(idxR === 1.U, 0.U, 1.U)
+        }
+      }
       dmaReader.module.io.data.ready := true.B
-      idxR := Mux(idxR === (bufferSize-1).U, 0.U, idxR + 1.U)
       printf("[HPME Log] idxR = %d, read %d from memory\n", idxR, dmaReader.module.io.data.bits)
     }
     dmaReader.module.io.complete.ready := !dmaReqValid
@@ -85,11 +104,11 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
       ((dmaWriter.module.io.req.ready && (dmaReqType === DMA_REQ_TYPE_WRITE)) -> true.B),
       (dmaWriter.module.io.complete.valid -> false.B)))
 
-    dmaWriter.module.io.data.bits := regBuffer(idxW)
+    dmaWriter.module.io.data.bits := writeBuffer(idxW)
     dmaWriter.module.io.data.valid := (dmaReqType === DMA_REQ_TYPE_WRITE)
     when(wen && dmaWriter.module.io.data.ready){
       idxW := Mux(idxW === (bufferSize-1).U, 0.U, idxW + 1.U)
-      printf("[HPME Log] idxW=%d, write %d to memory\n", idxW, regBuffer(idxW))
+      printf("[HPME Log] idxW=%d, write %d to memory\n", idxW, writeBuffer(idxW))
     }
     dmaWriter.module.io.complete.ready := !dmaReqValid
 
@@ -101,6 +120,29 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
       ((dmaReqType === DMA_REQ_TYPE_WRITE) && dmaWriter.module.io.req.ready)
     controller.module.io.dmaComplete := ((dmaReqType === DMA_REQ_TYPE_READ) && dmaReader.module.io.complete.valid) ||
       ((dmaReqType === DMA_REQ_TYPE_WRITE) && dmaWriter.module.io.complete.valid)
+    when(controller.module.io.dmaComplete){
+      idxR := 0.U
+      idxW := 0.U
+    }
+
+    /*
+     * Decode Enc Req
+     */
+    val encValid = (controller.module.io.encReq.bits =/= 0.U)
+
+    aesgcm.module.io.req.bits.data := readBuffer
+    aesgcm.module.io.req.bits.key := Cat(keyBuffer(1), keyBuffer(0))
+    aesgcm.module.io.req.valid := encValid
+
+    aesgcm.module.io.resp.ready := !encValid
+
+    when(aesgcm.module.io.resp.valid){
+      writeBuffer := aesgcm.module.io.resp.bits.data
+    }
+
+
+    controller.module.io.encReq.ready := !encValid // TODO: deal with this
+    controller.module.io.encComplete := encValid && aesgcm.module.io.resp.valid
   }
 }
 

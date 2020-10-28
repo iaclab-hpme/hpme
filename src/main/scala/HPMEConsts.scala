@@ -13,6 +13,13 @@ object HPMEConsts {
   val DMA_REQ_TYPE_READ = 1.U
   val DMA_REQ_TYPE_WRITE = 2.U
 
+  val DMA_REQ_DATA_TYPE_DATA = 0.U
+  val DMA_REQ_DATA_TYPE_KEY = 1.U
+  val DMA_REQ_DATA_TYPE_MAC = 2.U
+
   val BUFFER_SIZE = 512
   val BUFFER_WIDTH = 64
+
+  val ENC_REQ_WIDTH = 64
+  val ENC_KEY_WIDTH = 128
 }
