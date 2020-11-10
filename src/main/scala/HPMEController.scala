@@ -22,8 +22,9 @@ trait HPMEControllerBundle extends Bundle{
   // DMA Ctrl Signals
   val dmaReq = Decoupled(UInt(DMA_REQ_WIDTH.W))
   val dmaComplete = Input(Bool())
-  val encReq = Decoupled(UInt(ENC_REQ_WIDTH.W))
-  val encComplete = Input(Bool())
+  val hpmeIsIdle = Input(Bool())
+  val key = Decoupled(UInt(ENC_WIDTH.W))
+  val counter = Decoupled(UInt(ENC_WIDTH.W))
 }
 
 /*
@@ -44,23 +45,49 @@ trait HPMEContrllerModule extends HasRegMap{
   val dmaReqReg = RegInit(0.U(DMA_REQ_WIDTH.W)) // (62,61): 0 data, 1 key, 2 MAC (60,50): transfer words,
                                                 // (49,2): base addr, (1,0): 2 write 1 read
   val dmaCompleteReg = RegInit(false.B)
-  val encReqReg = RegInit(0.U(ENC_REQ_WIDTH.W)) // 1: enable 0: unable
-  val encCompleteReg = RegInit(false.B)
+  val dataInLo = Reg(UInt(XLEN.W))
+  val dataInHi = Reg(UInt(XLEN.W))
+  val dataInType = RegInit(0.U(XLEN.W))
+  val dataInRcvd = RegInit(false.B)
 
   io.dmaReq.valid := (dmaReqReg =/= 0.U)
   io.dmaReq.bits := dmaReqReg
   dmaCompleteReg := (io.dmaComplete) && (dmaReqReg =/= 0.U)
 
-  io.encReq.valid := (encReqReg =/= 0.U)
-  io.encReq.bits := encReqReg
-  encCompleteReg := (io.encComplete) && (encReqReg =/= 0.U)
+  val s_idle :: s_trans :: s_done :: Nil = Enum(3)
+  val tranState = RegInit(s_idle)
+
+  dataInRcvd := tranState === s_done
+  io.key.valid := dataInType === DMA_REQ_DATA_TYPE_KEY && tranState === s_trans
+  io.counter.valid := dataInType === DMA_REQ_DATA_TYPE_CNT && tranState === s_trans
+  io.key.bits := Cat(dataInHi, dataInLo)
+  io.counter.bits := Cat(dataInHi, dataInLo)
+  switch(tranState){
+    is(s_idle){
+      when(dataInType =/= 0.U){
+        tranState := s_trans
+      }
+    }
+    is(s_trans){
+      when(io.key.fire() || io.counter.fire()){
+        tranState := s_done
+      }
+    }
+    is(s_done){
+      when(dataInType === 0.U){
+        tranState := s_idle
+      }
+    }
+  }
 
   printf("[HPME Log] dmaReqReg = %x, dmaCompleteReg = %d\n", dmaReqReg, dmaCompleteReg)
   regmap(
     0x00 -> Seq(RegField.w(DMA_REQ_WIDTH, dmaReqReg)), // when written a number, valid will be set
     0x08 -> Seq(RegField.r(1, dmaCompleteReg)),
-    0x10 -> Seq(RegField.w(ENC_REQ_WIDTH, encReqReg)),
-    0x18 -> Seq(RegField.r(1, encCompleteReg)),
+    0x10 -> Seq(RegField.w(XLEN, dataInLo)),
+    0x18 -> Seq(RegField.w(XLEN, dataInHi)),
+    0x20 -> Seq(RegField.w(XLEN, dataInType)),
+    0x28 -> Seq(RegField.r(1, dataInRcvd))
   )
 }
 

@@ -31,6 +31,9 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
     val wen = RegInit(false.B) // write enable
     val dmaReqType = RegInit(0.U(2.W)) // 1.U: read req, 2.U: write req
 
+    val s_idle :: s_key :: s_counter :: s_data :: s_busy :: s_done :: Nil = Enum(6)
+    val state = RegInit(s_idle)
+
     /*
      * create and init data buffer and helper vars
      */
@@ -40,8 +43,8 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
 
     val readBuffer = RegInit(VecInit(initSeq))
     val writeBuffer = RegInit(VecInit(initSeq))
-    val keyBuffer = Reg(Vec(2, UInt(DMA_DATA_WIDTH.W)))
-    val macBuffer = Reg(Vec(2, UInt(DMA_DATA_WIDTH.W)))
+    val keyBuffer = Reg(UInt(ENC_WIDTH.W))
+    val cntBuffer = Reg(UInt(ENC_WIDTH.W))
 
     val idxR = RegInit(0.U(bufferSizeBits.W))
     val idxW = RegInit(0.U(bufferSizeBits.W))
@@ -71,25 +74,27 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
     ))
 
     dmaReader.module.io.data.ready := false.B
-    when(ren && dmaReader.module.io.data.valid){ // valid will be high for one cycle when data comes
+    val dmaReadDone = ren && dmaReader.module.io.data.valid
+    when(dmaReadDone){ // valid will be high for one cycle when data comes
       switch(dmaReqDataType){
         is(DMA_REQ_DATA_TYPE_DATA){
           readBuffer(idxR) := dmaReader.module.io.data.bits
           idxR := Mux(idxR === (bufferSize-1).U, 0.U, idxR + 1.U)
         }
-        is(DMA_REQ_DATA_TYPE_KEY){
-          keyBuffer(idxR) := dmaReader.module.io.data.bits
-          idxR := Mux(idxR === 1.U, 0.U, 1.U)
-        }
-        is(DMA_REQ_DATA_TYPE_MAC){
-          macBuffer(idxR) := dmaReader.module.io.data.bits
-          idxR := Mux(idxR === 1.U, 0.U, 1.U)
-        }
+//        is(DMA_REQ_DATA_TYPE_KEY){
+//          keyBuffer(idxR) := dmaReader.module.io.data.bits
+//          idxR := Mux(idxR === 1.U, 0.U, 1.U)
+//        }
+//        is(DMA_REQ_DATA_TYPE_CNT){
+//          cntBuffer(idxR) := dmaReader.module.io.data.bits
+//          idxR := Mux(idxR === 1.U, 0.U, 1.U)
+//        }
       }
       dmaReader.module.io.data.ready := true.B
       printf("[HPME Log] idxR = %d, read %d from memory\n", idxR, dmaReader.module.io.data.bits)
     }
     dmaReader.module.io.complete.ready := !dmaReqValid
+
 
 
     /*
@@ -120,29 +125,86 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
       ((dmaReqType === DMA_REQ_TYPE_WRITE) && dmaWriter.module.io.req.ready)
     controller.module.io.dmaComplete := ((dmaReqType === DMA_REQ_TYPE_READ) && dmaReader.module.io.complete.valid) ||
       ((dmaReqType === DMA_REQ_TYPE_WRITE) && dmaWriter.module.io.complete.valid)
+    controller.module.io.hpmeIsIdle := state === s_idle
     when(controller.module.io.dmaComplete){
       idxR := 0.U
       idxW := 0.U
     }
 
-    /*
-     * Decode Enc Req
-     */
-    val encValid = (controller.module.io.encReq.bits =/= 0.U)
 
-    aesgcm.module.io.req.bits.data := readBuffer
-    aesgcm.module.io.req.bits.key := Cat(keyBuffer(1), keyBuffer(0))
-    aesgcm.module.io.req.valid := encValid
+    controller.module.io.key.ready := state === s_idle
+    controller.module.io.counter.ready := state === s_idle
 
-    aesgcm.module.io.resp.ready := !encValid
-
-    when(aesgcm.module.io.resp.valid){
-      writeBuffer := aesgcm.module.io.resp.bits.data
+    when(controller.module.io.key.fire()){
+      keyBuffer := controller.module.io.key.bits
+    }
+    when(controller.module.io.counter.fire()){
+      cntBuffer := controller.module.io.counter.bits
     }
 
 
-    controller.module.io.encReq.ready := !encValid // TODO: deal with this
-    controller.module.io.encComplete := encValid && aesgcm.module.io.resp.valid
+
+
+
+    /*
+     * FSM logic
+     */
+    switch(state){
+      is(s_idle){
+        state := MuxCase(state, Seq(
+          ((dmaReqType === DMA_REQ_TYPE_READ) && dmaReader.module.io.complete.valid) -> s_data,
+          (controller.module.io.key.fire()) -> s_key,
+          (controller.module.io.counter.fire()) -> s_counter,
+        ))
+      }
+      is(s_key){
+        when(aesgcm.module.io.key.fire()){
+          state := s_idle
+        }
+      }
+      is(s_counter){
+        when(aesgcm.module.io.counter.fire()){
+          state := s_idle
+        }
+      }
+      is(s_data){
+        when(aesgcm.module.io.reqData.fire()){
+          state := s_busy
+        }
+      }
+      is(s_busy){
+        when(aesgcm.module.io.respData.fire()){
+          state := s_done
+        }
+      }
+      is(s_done){
+        when(dmaReqType === DMA_REQ_TYPE_NONE){
+          state := s_idle
+        }
+      }
+    }
+
+    /*
+     * aesgcm signal logic
+     */
+    aesgcm.module.io.key.bits := keyBuffer
+    aesgcm.module.io.counter.bits := cntBuffer
+    for(i <- 0 until ENC_SIZE){
+      aesgcm.module.io.reqData.bits(i) := Cat(readBuffer(i*2 + 1), readBuffer(i*2))
+    }
+
+    aesgcm.module.io.key.valid := state === s_key
+    aesgcm.module.io.counter.valid := state === s_counter
+    aesgcm.module.io.reqData.valid := state === s_data
+
+    aesgcm.module.io.respData.ready := state === s_busy
+
+    when(aesgcm.module.io.respData.valid){
+      for(i <- 0 until ENC_SIZE){
+        writeBuffer(i*2) := aesgcm.module.io.respData.bits(i)(63,0)
+        writeBuffer(i*2 + 1) := aesgcm.module.io.respData.bits(i)(127,64)
+      }
+    }
   }
 }
 
