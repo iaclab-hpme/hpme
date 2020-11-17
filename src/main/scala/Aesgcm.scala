@@ -10,7 +10,7 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util.UIntIsOneOf
 import testchipip.TLHelper
 import HPMEConsts._
-import hpme.aes.AesTop
+import aes._
 
 class Aesgcm(implicit p:Parameters) extends LazyModule {
   lazy val module = new LazyModuleImp(this){
@@ -19,8 +19,10 @@ class Aesgcm(implicit p:Parameters) extends LazyModule {
       val counter = Flipped(Decoupled(UInt(ENC_WIDTH.W)))
       val reqData = Flipped(Decoupled(Vec(ENC_SIZE, UInt(ENC_WIDTH.W))))
       val respData = Decoupled(Vec(ENC_SIZE, UInt(ENC_WIDTH.W)))
+      val respMac = Decoupled(UInt(ENC_WIDTH.W))
+      val isEnc = Input(Bool())
     })
-    val s_key :: s_keyexp :: s_counter :: s_enc :: s_busy0 :: s_data :: s_busy1 :: s_done :: Nil = Enum(8)
+    val s_key :: s_keyexp :: s_counter :: s_enc :: s_busy0 :: s_data :: s_busy1 :: s_mac :: s_busy2 :: s_done :: Nil = Enum(10)
     val state = RegInit(s_key)
     val key = Reg(UInt(ENC_WIDTH.W))
     val initCounter = Reg(UInt(ENC_WIDTH.W))
@@ -28,16 +30,21 @@ class Aesgcm(implicit p:Parameters) extends LazyModule {
 
 //    val reqBuffer = Reg(Vec(BUFFER_SIZE, UInt(BUFFER_WIDTH.W)))
     val respBuffer = Reg(Vec(ENC_SIZE + 1, UInt(ENC_WIDTH.W)))
+    val macBuffer = Reg(UInt(ENC_WIDTH.W))
 
     // aes engine
     val aesEngine = Module(new AesTop(pipelineEng = false, encEngNum = ENGINE_NUM + 1))
     val iterNum = RegInit(0.U(6.W))
+
+    // mac engine
+    val macEngine = Module(new calcMac())
 
     // io ready and valid
     io.key.ready := (state === s_key)
     io.counter.ready := (state === s_counter)
     io.reqData.ready := (state === s_data)
     io.respData.valid := (state === s_done)
+    io.respMac.valid := (state === s_done)
 
     when(io.reqData.fire()){
       for(i <- 0 until ENC_SIZE){
@@ -45,6 +52,7 @@ class Aesgcm(implicit p:Parameters) extends LazyModule {
       }
     }
     io.respData.bits := respBuffer.tail
+    io.respMac.bits := macBuffer
 
     // State machine logic
     switch(state){
@@ -87,10 +95,20 @@ class Aesgcm(implicit p:Parameters) extends LazyModule {
         }
       }
       is(s_busy1){
-        state := s_done
+        state := s_mac
+      }
+      is(s_mac){
+        when(macEngine.io.data.fire()){
+          state := s_busy2
+        }
+      }
+      is(s_busy2){
+        when(macEngine.io.mac.fire()){
+          state := s_done
+        }
       }
       is(s_done){
-        when(io.respData.ready){
+        when(io.respData.fire() && io.respMac.fire()){
           state := s_key
         }
       }
@@ -115,6 +133,17 @@ class Aesgcm(implicit p:Parameters) extends LazyModule {
     aesEngine.io.encIntf.text.bits(0) := initCounter
     for(i <- 1 to ENGINE_NUM){
       aesEngine.io.encIntf.text.bits(i) := iterCounter + i.U
+    }
+
+    macEngine.io.data.valid := state === s_mac
+    macEngine.io.data.bits(0) := respBuffer(0)
+    for(i <- 1 to ENC_SIZE){
+      macEngine.io.data.bits(i) := Mux(io.isEnc, respBuffer(i), io.reqData.bits(i-1))
+    }
+    macEngine.io.mac.ready := state === s_busy2
+
+    when(macEngine.io.mac.fire()){
+      macBuffer := macEngine.io.mac.bits
     }
   }
 }

@@ -20,6 +20,9 @@ object HPMEConsts {
   val DMA_REQ_DATA_TYPE_CNT = 2.U
   val DMA_REQ_DATA_TYPE_MAC = 3.U
 
+  val DATA_OUT_TYPE_NONE = 0.U
+  val DATA_OUT_TYPE_MAC = 1.U
+
   val BUFFER_SIZE = 512
   val BUFFER_WIDTH = 64
 

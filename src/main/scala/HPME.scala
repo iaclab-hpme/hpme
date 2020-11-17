@@ -12,7 +12,11 @@ import testchipip.TLHelper
 
 import HPMEConsts._
 
-case class HPMEConfig()
+case class HPMEConfig(
+                     base: BigInt,
+                     portName: String,
+                     devName: String
+                     )
 
 case object HPMEKey extends Field[Option[HPMEConfig]](None)
 
@@ -45,6 +49,7 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
     val writeBuffer = RegInit(VecInit(initSeq))
     val keyBuffer = Reg(UInt(ENC_WIDTH.W))
     val cntBuffer = Reg(UInt(ENC_WIDTH.W))
+    val macBuffer = Reg(UInt(ENC_WIDTH.W))
 
     val idxR = RegInit(0.U(bufferSizeBits.W))
     val idxW = RegInit(0.U(bufferSizeBits.W))
@@ -196,15 +201,22 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
     aesgcm.module.io.key.valid := state === s_key
     aesgcm.module.io.counter.valid := state === s_counter
     aesgcm.module.io.reqData.valid := state === s_data
+    aesgcm.module.io.isEnc := controller.module.io.isEnc
 
     aesgcm.module.io.respData.ready := state === s_busy
+    aesgcm.module.io.respMac.ready := state === s_busy
 
-    when(aesgcm.module.io.respData.valid){
+    when(aesgcm.module.io.respData.fire()){
       for(i <- 0 until ENC_SIZE){
         writeBuffer(i*2) := aesgcm.module.io.respData.bits(i)(63,0)
         writeBuffer(i*2 + 1) := aesgcm.module.io.respData.bits(i)(127,64)
       }
     }
+    when(aesgcm.module.io.respMac.fire()){
+      macBuffer := aesgcm.module.io.respMac.bits
+    }
+    controller.module.io.mac.bits := macBuffer
+    controller.module.io.mac.valid := RegNext(state === s_done)
   }
 }
 
@@ -212,13 +224,11 @@ class HPME(c: HPMEControllerParams)(implicit p:Parameters) extends LazyModule {
 // Mount HPME to SoC
 // Connect the singals
 trait CanHavePeripheryHPME{ this: BaseSubsystem =>
-  private val address = BigInt(0x78000000)
-  private val portName = "hpme"
 
   val hpmeOpt = p(HPMEKey).map { params =>
-    val hpme = LazyModule(new HPME(HPMEControllerParams(address, pbus.beatBytes))(p))
-    pbus.toVariableWidthSlave(Some(portName)){hpme.controller.node}
-    fbus.fromPort(Some(portName))() :=* hpme.hpmeNode
+    val hpme = LazyModule(new HPME(HPMEControllerParams(params.base, pbus.beatBytes, params.devName))(p))
+    pbus.toVariableWidthSlave(Some(params.portName)){hpme.controller.node}
+    fbus.fromPort(Some(params.portName))() :=* hpme.hpmeNode
     hpme
   }
 }
