@@ -102,8 +102,9 @@ trait HPMEContrllerModule extends HasRegMap{
   dataOutType := Mux(macState === macs_sent, DATA_OUT_TYPE_MAC, DATA_OUT_TYPE_NONE)
   switch(macState){
     is(macs_idle){
-      when(io.mac.fire()){}
-      macState := macs_sent
+      when(io.mac.fire()){
+        macState := macs_sent
+      }
     }
     is(macs_sent){
       when(dataOutRcvd){
