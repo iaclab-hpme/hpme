@@ -51,12 +51,12 @@ trait HPMEContrllerModule extends HasRegMap{
   val dmaCompleteReg = RegInit(false.B)
   val dataInLo = Reg(UInt(XLEN.W))
   val dataInHi = Reg(UInt(XLEN.W))
-  val dataInType = RegInit(0.U(XLEN.W))
+  val dataInType = RegInit(0.U(8.W))
   val dataInRcvd = RegInit(false.B)
   val isEnc = RegInit(false.B)
   val dataOutLo = Reg(UInt(XLEN.W))
   val dataOutHi = Reg(UInt(XLEN.W))
-  val dataOutType = RegInit(0.U(XLEN.W))
+  val dataOutType = RegInit(0.U(8.W))
   val dataOutRcvd = RegInit(false.B)
 
   io.dmaReq.valid := (dmaReqReg =/= 0.U)
@@ -124,12 +124,12 @@ trait HPMEContrllerModule extends HasRegMap{
     0x08 -> Seq(RegField.r(1, dmaCompleteReg)),
     0x10 -> Seq(RegField.w(XLEN, dataInLo)),
     0x18 -> Seq(RegField.w(XLEN, dataInHi)),
-    0x20 -> Seq(RegField.w(XLEN, dataInType)),
+    0x20 -> Seq(RegField.w(8, dataInType)),
     0x28 -> Seq(RegField.r(1, dataInRcvd)),
     0x29 -> Seq(RegField.w(1, isEnc)),
     0x30 -> Seq(RegField.r(XLEN, dataOutLo)),
     0x38 -> Seq(RegField.r(XLEN, dataOutHi)),
-    0x40 -> Seq(RegField.r(XLEN, dataOutType)),
+    0x40 -> Seq(RegField.r(8, dataOutType)),
     0x48 -> Seq(RegField.w(1, dataOutRcvd))
   )
 }

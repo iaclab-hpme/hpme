@@ -17,43 +17,58 @@ class calcMac extends Module{
   val mac = Reg(UInt(ENC_WIDTH.W))
   io.mac.bits := mac
 
-  val idle :: running :: done :: Nil = Enum(3)
+  val idle :: prepare :: running :: done :: Nil = Enum(4)
   val fsm = RegInit(idle)
 
   val regs = Reg(Vec(ENC_SIZE + 1, UInt(ENC_WIDTH.W)))
   val index = RegInit(1.U(16.W))
+  val regWriteIdx = RegInit(0.U(16.W))
+  val regWriteEnable = RegInit(false.B)
 
-  val mod = BigInt("123456789abcdef0123456789abcdef0", 16)
+  val mod = BigInt("c0000000000000000000000000000001", 16)
   val u = BigInt("1" + "0" * (2*ENC_WIDTH + 1), 2) / mod
+
+  val modMulA = Wire(UInt(ENC_WIDTH.W))
+  val modMulB = Wire(UInt(ENC_WIDTH.W))
+
+  val modMulResult = utils.ModMul(ENC_WIDTH)(modMulA, modMulB, mod.U, u.U)
+  modMulA := Mux(index < (ENC_SIZE + 1).U, regs(index), regs(0))
+  modMulB := regs(0)
 
 
   switch(fsm){
     is(idle){
       macValid := false.B
       dataReady := true.B
+      index := 1.U
       when(io.data.valid){
         for(i <- 0 until ENC_SIZE + 1){
           regs(i) := io.data.bits(i)
         }
-        fsm := running
+        fsm := prepare
         printf("[calcMac] idle end\n")
       }
     }
-    is(running){
+    is(prepare){ // wait 4 cycles until modmul pipeline is full
       dataReady := false.B
-      when(index < ENC_SIZE.U){
-        regs(index + 1.U) := regs(index + 1.U) ^ utils.ModMul(regs(index), regs(0), mod.U, u.U, ENC_WIDTH.U)
-        index := index + 1.U
+      when(index === 4.U){
+        fsm := running
+      }
+      index := index + 1.U
+    }
+    is(running){
+      index := index + 1.U
+      when(index < (ENC_SIZE + 3).U){
+        regs(index - 3.U) := regs(index - 3.U) ^ modMulResult
       }.otherwise {
-        mac := regs(0) ^ utils.ModMul(regs(index), regs(0), mod.U, u.U, ENC_WIDTH.U)
-        index := 1.U
+        mac := regs(0) ^ modMulResult
         fsm := done
         printf("[calcMac] running end\n")
       }
     }
     is(done){
-      when(io.mac.ready){
-        macValid := true.B
+      macValid := true.B
+      when(io.mac.fire()){
         fsm := idle
         printf("[calcMac] done end\n")
       }
